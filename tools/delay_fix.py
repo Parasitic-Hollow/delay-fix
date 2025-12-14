@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Delay Fix - Herramienta para análisis de audio y aplicación de delay
-Versión 1.0.0: Primera versión estable
+Versión 1.0.1: Fix para delay negativo con target (correcciones separadas inicio/final)
 ===============================================================
 DESCRIPCIÓN:
 Analiza audio para extraer silencios y aplica delays precisos ajustados
@@ -1371,7 +1371,7 @@ def procesar_delay_con_target(input_file, delay_str, target_str, temp_dir):
     NOTA: Siempre crea nuevos archivos, nunca reutiliza existentes
     """
     print(f"\n{'='*60}")
-    print(f"PROCESAMIENTO DE DELAY CON TARGET v1.0.0")
+    print(f"PROCESAMIENTO DE DELAY CON TARGET v1.0.1")
     print(f"{'='*60}")
     
     delay_ms = parsear_delay(delay_str)
@@ -1582,39 +1582,144 @@ def procesar_delay_con_target(input_file, delay_str, target_str, temp_dir):
         if es_negativo:
             print(f"\nPaso 4/5: Procesando delay NEGATIVO con ajuste para target...")
             
-            if ajuste_target_ms < 0:
-                corte_total_ms = abs(delay_ajustado_ms) + abs(ajuste_target_ms)
-                print(f"  Corte total necesario: {corte_total_ms:.2f} ms")
-                print(f"    - Delay solicitado: {abs(delay_ms):.2f} ms")
-                print(f"    - Ajuste para target: +{abs(ajuste_target_ms):.2f} ms")
-            else:
-                corte_total_ms = abs(delay_ajustado_ms)
-            
-            corte_ajustado_ms, corte_frames_elegidos, corte_frames_exactos = ajustar_delay_a_frames(
-                -corte_total_ms if corte_total_ms > 0 else 0, frame_duration_ms
-            )
-            corte_ajustado_ms = abs(corte_ajustado_ms)
-            
-            print(f"\n  Ajuste a frame boundaries:")
-            print(f"    Corte solicitado: {corte_total_ms:.2f} ms ({corte_total_ms/frame_duration_ms:.3f} frames)")
-            print(f"    Corte ajustado: {corte_ajustado_ms:.2f} ms ({corte_frames_elegidos} frames)")
-            
-            inicio_corte_s = corte_ajustado_ms / 1000.0
-            
             if abs(ajuste_target_ms) < 0.1:
+                # Solo delay, target ya alcanzado
+                corte_total_ms = abs(delay_ajustado_ms)
+                print(f"  Solo delay negativo: {corte_total_ms:.2f} ms")
                 nombre_sufijo = "_delay"
+                
+                corte_ajustado_ms, corte_frames_elegidos, corte_frames_exactos = ajustar_delay_a_frames(
+                    -corte_total_ms if corte_total_ms > 0 else 0, frame_duration_ms
+                )
+                corte_ajustado_ms = abs(corte_ajustado_ms)
+                
+                print(f"\n  Ajuste a frame boundaries:")
+                print(f"    Corte solicitado: {corte_total_ms:.2f} ms ({corte_total_ms/frame_duration_ms:.3f} frames)")
+                print(f"    Corte ajustado: {corte_ajustado_ms:.2f} ms ({corte_frames_elegidos} frames)")
+                
+                inicio_corte_s = corte_ajustado_ms / 1000.0
+                
+                print(f"\nPaso 5/5: Creando audio con delay aplicado...")
+                
+                archivo_delay = crear_audio_con_delay(mka_path, inicio_corte_s, temp_dir, nombre_sufijo)
+                
+                if not archivo_delay or not archivo_delay.exists():
+                    print(f"Error: No se pudo crear el audio con delay")
+                    return "error", None
+                
+                archivo_final = archivo_delay
+                
+            elif ajuste_target_ms < 0:
+                # Delay negativo Y target negativo: Cortar inicio Y final
+                print(f"  Delay negativo Y target negativo: Cortar inicio Y final")
+                print(f"    1. Delay: cortar {abs(delay_ajustado_ms):.2f} ms del inicio")
+                print(f"    2. Target: cortar {abs(ajuste_target_ms):.2f} ms del final")
+                
+                # Primero aplicar delay negativo (cortar inicio)
+                delay_corte_ms = abs(delay_ajustado_ms)
+                delay_corte_ajustado_ms, delay_frames, _ = ajustar_delay_a_frames(
+                    -delay_corte_ms, frame_duration_ms
+                )
+                delay_corte_ajustado_ms = abs(delay_corte_ajustado_ms)
+                
+                print(f"\n  Aplicando delay negativo al inicio:")
+                print(f"    Corte solicitado: {delay_corte_ms:.2f} ms")
+                print(f"    Corte ajustado: {delay_corte_ajustado_ms:.2f} ms")
+                
+                inicio_corte_s = delay_corte_ajustado_ms / 1000.0
+                
+                # Crear archivo con delay aplicado
+                archivo_con_delay = crear_audio_con_delay(mka_path, inicio_corte_s, temp_dir, "_temp_delay")
+                
+                if not archivo_con_delay:
+                    print(f"Error: No se pudo aplicar delay negativo")
+                    return "error", None
+                
+                # Ahora ajustar target cortando el final
+                print(f"\n  Ajustando target cortando el final:")
+                print(f"    Corte necesario: {abs(ajuste_target_ms):.2f} ms")
+                
+                archivo_final = cortar_final_audio(
+                    archivo_con_delay,
+                    abs(ajuste_target_ms),
+                    frame_duration_ms,
+                    temp_dir,
+                    nombre_sufijo="_delay_target"
+                )
+                
+                # Limpiar archivo temporal
+                archivo_con_delay.unlink(missing_ok=True)
+                
             else:
-                nombre_sufijo = "_delay_target"
+                # Delay negativo pero target positivo: Cortar inicio pero luego agregar silencio al final
+                print(f"  Delay negativo pero target positivo: Cortar inicio, agregar al final")
+                print(f"    1. Delay: cortar {abs(delay_ajustado_ms):.2f} ms del inicio")
+                print(f"    2. Target: agregar {ajuste_target_ms:.2f} ms al final")
+                
+                # Primero aplicar delay negativo
+                delay_corte_ms = abs(delay_ajustado_ms)
+                delay_corte_ajustado_ms, delay_frames, _ = ajustar_delay_a_frames(
+                    -delay_corte_ms, frame_duration_ms
+                )
+                delay_corte_ajustado_ms = abs(delay_corte_ajustado_ms)
+                
+                inicio_corte_s = delay_corte_ajustado_ms / 1000.0
+                
+                archivo_con_delay = crear_audio_con_delay(mka_path, inicio_corte_s, temp_dir, "_temp_delay")
+                
+                if not archivo_con_delay:
+                    print(f"Error: No se pudo aplicar delay negativo")
+                    return "error", None
+                
+                # Ahora necesitamos crear segmentos de silencio para agregar al final
+                print(f"\n  Creando archivo base de silencio para target positivo...")
+                
+                wav_path = convertir_mka_a_wav(archivo_con_delay, temp_dir)
+                if not wav_path:
+                    print(f"Error: No se pudo crear WAV para análisis de silencio")
+                    return "error", None
+                
+                resultado_silencios = analizar_silencios_wav(wav_path, frame_duration_ms)
+                
+                if not resultado_silencios:
+                    print(f"Error: No se encontraron silencios para target")
+                    return "error", None
+                
+                archivo_silencio = extraer_silencio_del_mka(archivo_con_delay, resultado_silencios, temp_dir)
+                
+                if not archivo_silencio:
+                    print(f"Error: No se pudo extraer silencio")
+                    return "error", None
+                
+                # Crear segmentos para target
+                duracion_silencio_ms = resultado_silencios['duracion_ajustada_ms']
+                segmentos_target, target_real_ms = crear_segmentos_delay(
+                    archivo_silencio,
+                    ajuste_target_ms,
+                    frame_duration_ms,
+                    duracion_silencio_ms,
+                    temp_dir,
+                    sufijo="_target"
+                )
+                
+                if not segmentos_target:
+                    print(f"Error: No se pudieron crear segmentos para target")
+                    return "error", None
+                
+                # Concatenar archivo con delay + segmentos de target
+                archivos_concatenar = [archivo_con_delay] + segmentos_target
+                archivo_final_path = temp_dir / f"{nombre_base}_delay_target.mka"
+                
+                archivo_final = concatenar_con_ffmpeg(archivos_concatenar, archivo_final_path, temp_dir)
+                
+                # Limpiar archivos temporales
+                archivo_con_delay.unlink(missing_ok=True)
             
-            print(f"\nPaso 5/5: Creando audio con delay aplicado...")
-            
-            archivo_delay = crear_audio_con_delay(mka_path, inicio_corte_s, temp_dir, nombre_sufijo)
-            
-            if not archivo_delay or not archivo_delay.exists():
-                print(f"Error: No se pudo crear el audio con delay")
+            if not archivo_final or not archivo_final.exists():
+                print(f"Error: No se pudo crear el audio final")
                 return "error", None
             
-            duracion_final_s = calcular_duracion_audio_segundos(archivo_delay)
+            duracion_final_s = calcular_duracion_audio_segundos(archivo_final)
             if duracion_final_s:
                 diferencia_final_s = target_s - duracion_final_s
                 print(f"\n  Verificación:")
@@ -1622,7 +1727,7 @@ def procesar_delay_con_target(input_file, delay_str, target_str, temp_dir):
                 print(f"    Target deseado: {target_s:.6f} s")
                 print(f"    Diferencia: {diferencia_final_s:.6f} s ({diferencia_final_s*1000:.3f} ms)")
             
-            return "negativo_con_target", archivo_delay
+            return "negativo_con_target", archivo_final
             
         else:
             # CASO: DELAY POSITIVO con target
@@ -1790,7 +1895,7 @@ def procesar_delay_con_target(input_file, delay_str, target_str, temp_dir):
 
 def main():
     if len(sys.argv) < 2:
-        print("Delay Fix v1.0.0 - Herramienta para análisis de audio y aplicación de delay")
+        print("Delay Fix v1.0.1 - Herramienta para análisis de audio y aplicación de delay")
         print("="*70)
         print("DESCRIPCIÓN:")
         print("  Analiza silencios en audio y aplica delays precisos ajustados a frame boundaries")
@@ -1860,7 +1965,7 @@ def main():
         print("  Instala FFmpeg para usar esta herramienta")
         return 1
     
-    print(f"\n[Delay Fix v1.0.0]")
+    print(f"\n[Delay Fix v1.0.1]")
     print(f"Archivo origen: {Path(input_file).name}")
     
     temp_dir = Path(tempfile.gettempdir()) / "delay_fix"
@@ -1947,7 +2052,7 @@ def main():
         print(f"\nNOTA: Para usar target, ejecute: python delay_fix.py {input_file} {delay_str} <target>")
         
         print(f"\n{'='*60}")
-        print(f"PROCESAMIENTO DE DELAY (sin target) v1.0.0")
+        print(f"PROCESAMIENTO DE DELAY (sin target) v1.0.1")
         print(f"{'='*60}")
         
         es_negativo = delay_ms < 0
@@ -2107,7 +2212,7 @@ def main():
         )
         
         print(f"\n{'='*60}")
-        print(f"RESUMEN DEL PROCESO v1.0.0")
+        print(f"RESUMEN DEL PROCESO v1.0.1")
         print(f"{'='*60}")
         print(f"1. MKA (metadatos confiables):")
         print(f"   {mka_path.name}")
